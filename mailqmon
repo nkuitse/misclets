@@ -1,0 +1,72 @@
+#!/bin/zsh
+
+path+=(
+    /usr/local/bin
+    /usr/sbin
+    /sbin
+    /site/bin
+)
+
+typeset host=$(print -P '%m')
+typeset sender=root@${host:l}.flo.org
+typeset recipient=notices@flo.org
+typeset dryrun=false verbose=false
+integer threshold=50 delay=300
+typeset log=/var/log/mailqmon.log
+
+main() {
+    while getopts :m:d:f:t:nv opt; do
+        case $opt in
+            (m) threshold=$OPTARG ;;
+            (d) delay=$(dur2sec $OPTARG) ;;
+            (f) sender=$OPTARG ;;
+            (t) recipient=$OPTARG ;;
+            (n) dryrun=true; verbose=true; print 'Dry run...' >&2 ;;
+            (v) verbose=true ;;
+            (*) usage ;;
+        esac
+    done
+    shift $(( OPTIND - 1 ))
+    integer last=$(last-check)
+    integer count=$(check)
+    if (( count > threshold )); then
+        ! $verbose || print "Threshold crossed: $count > $threshold" >&2
+        if (( count > last )); then
+            ! $verbose || print "Mail queue growing: was $last" >&2
+            notify $count
+        fi
+    elif $verbose; then
+        print "OK: $count <= $threshold messages in the mail queue"
+    fi
+}
+
+check() {
+    integer n=$(mailq | grep -v '^Mail' | grep -c '^\w')
+    if (( n > 0 )); then
+        print -P '%D{%Y%m%dT%H%M%S}' $n >> $log
+    else
+        touch $log
+    fi
+    print $n
+}
+
+last-check() {
+    typeset d
+    integer n
+    tail -n1 $log 2> /dev/null | read d n
+    print ${n:-0}
+}
+
+notify() {
+    integer count=$1
+    if $dryrun; then
+        print -l "From: $sender" "To: $recipient" "Subject: URGENT: Mail piling up on $host" '' "There are now $count messages queued up." >&2
+    else
+        exec < /dev/null
+        sosmail -f $sender -t $recipient "URGENT: Mail piling up on $host" "There are now $count messages queued up."
+    fi
+}
+
+main "$@"
+
+# vim:set et ts=4 sw=4 si ai:
